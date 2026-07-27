@@ -1,0 +1,40 @@
+name: Bouw CamperFinder Pro APK
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Project ophalen
+        uses: actions/checkout@v4
+
+      - name: Java 17 instellen
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Gradle instellen
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
+      - name: Debug APK bouwen
+        run: gradle assembleDebug --no-daemon
+
+      - name: APK hernoemen
+        run: cp app/build/outputs/apk/debug/app-debug.apk CamperFinderPro-1.0.apk
+
+      - name: APK beschikbaar maken
+        uses: actions/upload-artifact@v4
+        with:
+          name: CamperFinderPro-1.0
+          path: CamperFinderPro-1.0.apk
+          if-no-files-found: error
