@@ -1,4 +1,4 @@
-name: Bouw CamperFinder Pro APK
+name: Bouw en publiceer CamperFinder Pro 1.0
 
 on:
   push:
@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -26,15 +26,35 @@ jobs:
         with:
           gradle-version: '8.7'
 
-      - name: Debug APK bouwen
-        run: gradle assembleDebug --no-daemon
+      - name: Android SDK instellen
+        uses: android-actions/setup-android@v3
+
+      - name: Android SDK 35 installeren
+        run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
+
+      - name: APK bouwen
+        run: gradle :app:assembleDebug --no-daemon --stacktrace
 
       - name: APK hernoemen
         run: cp app/build/outputs/apk/debug/app-debug.apk CamperFinderPro-1.0.apk
 
-      - name: APK beschikbaar maken
+      - name: APK als tijdelijk artifact bewaren
         uses: actions/upload-artifact@v4
         with:
           name: CamperFinderPro-1.0
           path: CamperFinderPro-1.0.apk
           if-no-files-found: error
+
+      - name: Bestaande versie 1.0 verwijderen
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete v1.0 --cleanup-tag --yes || true
+
+      - name: Installatiebestand publiceren
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create v1.0 CamperFinderPro-1.0.apk \
+            --title 'CamperFinder Pro 1.0' \
+            --notes 'Kant-en-klare Android APK. Download CamperFinderPro-1.0.apk op uw tablet en tik erop om te installeren.'
