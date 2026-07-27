@@ -5,6 +5,10 @@ on:
     branches: [ main ]
   workflow_dispatch:
 
+concurrency:
+  group: camperfinder-apk
+  cancel-in-progress: true
+
 permissions:
   contents: write
 
@@ -57,4 +61,4 @@ jobs:
         run: |
           gh release create v1.0 CamperFinderPro-1.0.apk \
             --title 'CamperFinder Pro 1.0' \
-            --notes 'Kant-en-klare Android APK. Download CamperFinderPro-1.0.apk op uw tablet en tik erop om te installeren.'
+            --notes 'Kant-en-klare Android APK met zoeken rond GPS of een ingegeven plaatsnaam. Download CamperFinderPro-1.0.apk op uw tablet en tik erop om te installeren.'
