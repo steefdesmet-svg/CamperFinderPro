@@ -7,6 +7,7 @@ import android.location.Location
 import android.net.Uri
 import android.os.Bundle
 import android.view.View
+import android.view.inputmethod.EditorInfo
 import android.widget.ArrayAdapter
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
@@ -21,6 +22,7 @@ import kotlinx.coroutines.withContext
 import okhttp3.FormBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import org.json.JSONArray
 import org.json.JSONObject
 import org.osmdroid.config.Configuration
 import org.osmdroid.tileprovider.tilesource.TileSourceFactory
@@ -44,11 +46,16 @@ class MainActivity : AppCompatActivity() {
         ActivityResultContracts.RequestMultiplePermissions()
     ) { permissions ->
         if (permissions[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
-            permissions[Manifest.permission.ACCESS_COARSE_LOCATION] == true) {
+            permissions[Manifest.permission.ACCESS_COARSE_LOCATION] == true
+        ) {
             enableLocation()
         } else {
             binding.statusText.text = "Locatietoegang geweigerd"
-            Toast.makeText(this, "Geef locatietoegang om camperplaatsen rond u te zoeken.", Toast.LENGTH_LONG).show()
+            Toast.makeText(
+                this,
+                "U kunt nog steeds een plaatsnaam ingeven om daar camperplaatsen te zoeken.",
+                Toast.LENGTH_LONG
+            ).show()
         }
     }
 
@@ -76,10 +83,19 @@ class MainActivity : AppCompatActivity() {
 
     private fun setupControls() {
         val radii = listOf("5 km", "10 km", "20 km", "30 km", "50 km", "75 km", "100 km")
-        binding.radiusSpinner.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, radii)
+        binding.radiusSpinner.adapter =
+            ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, radii)
         binding.radiusSpinner.setSelection(2)
         binding.searchButton.setOnClickListener { searchCamperPlaces() }
         binding.locationButton.setOnClickListener { centerOnLocation() }
+        binding.placeInput.setOnEditorActionListener { _, actionId, _ ->
+            if (actionId == EditorInfo.IME_ACTION_SEARCH) {
+                searchCamperPlaces()
+                true
+            } else {
+                false
+            }
+        }
     }
 
     private fun requestLocation() {
@@ -88,7 +104,12 @@ class MainActivity : AppCompatActivity() {
         if (fine == PackageManager.PERMISSION_GRANTED || coarse == PackageManager.PERMISSION_GRANTED) {
             enableLocation()
         } else {
-            locationPermission.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
+            locationPermission.launch(
+                arrayOf(
+                    Manifest.permission.ACCESS_FINE_LOCATION,
+                    Manifest.permission.ACCESS_COARSE_LOCATION
+                )
+            )
         }
     }
 
@@ -99,7 +120,12 @@ class MainActivity : AppCompatActivity() {
                 val loc = locationOverlay.myLocation
                 if (loc != null) {
                     currentLocation = loc
-                    binding.statusText.text = String.format(Locale.getDefault(), "Locatie: %.5f, %.5f", loc.latitude, loc.longitude)
+                    binding.statusText.text = String.format(
+                        Locale.getDefault(),
+                        "GPS-locatie: %.5f, %.5f",
+                        loc.latitude,
+                        loc.longitude
+                    )
                     binding.mapView.controller.animateTo(loc)
                     binding.mapView.controller.setZoom(13.0)
                 }
@@ -110,36 +136,91 @@ class MainActivity : AppCompatActivity() {
     private fun centerOnLocation() {
         val loc = currentLocation ?: locationOverlay.myLocation
         if (loc == null) {
-            Toast.makeText(this, "Locatie is nog niet beschikbaar.", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "GPS-locatie is nog niet beschikbaar.", Toast.LENGTH_SHORT).show()
             return
         }
         currentLocation = loc
+        binding.placeInput.text?.clear()
+        binding.statusText.text = "Zoeken vanaf mijn GPS-locatie"
         binding.mapView.controller.animateTo(loc)
         binding.mapView.controller.setZoom(14.0)
     }
 
-    private fun selectedRadiusKm(): Int = binding.radiusSpinner.selectedItem.toString().substringBefore(" ").toInt()
+    private fun selectedRadiusKm(): Int =
+        binding.radiusSpinner.selectedItem.toString().substringBefore(" ").toInt()
 
     private fun searchCamperPlaces() {
-        val origin = currentLocation ?: locationOverlay.myLocation
-        if (origin == null) {
-            Toast.makeText(this, "Wacht tot uw GPS-locatie beschikbaar is.", Toast.LENGTH_LONG).show()
-            return
-        }
-        currentLocation = origin
+        val typedPlace = binding.placeInput.text?.toString()?.trim().orEmpty()
         val radiusKm = selectedRadiusKm()
-        setLoading(true, "Camperplaatsen zoeken binnen $radiusKm km…")
+        setLoading(
+            true,
+            if (typedPlace.isBlank()) {
+                "Camperplaatsen zoeken binnen $radiusKm km…"
+            } else {
+                "Locatie ‘$typedPlace’ opzoeken…"
+            }
+        )
 
         lifecycleScope.launch {
             try {
-                val places = withContext(Dispatchers.IO) { queryOverpass(origin, radiusKm) }
-                showPlaces(places, origin, radiusKm)
+                val originAndLabel = withContext(Dispatchers.IO) {
+                    if (typedPlace.isNotBlank()) {
+                        geocodePlace(typedPlace)
+                            ?: error("Plaats niet gevonden. Voeg eventueel het land toe.")
+                    } else {
+                        val gps = currentLocation ?: locationOverlay.myLocation
+                            ?: error("GPS-locatie is nog niet beschikbaar. Vul een plaatsnaam in.")
+                        gps to "mijn GPS-locatie"
+                    }
+                }
+
+                val origin = originAndLabel.first
+                val originLabel = originAndLabel.second
+                binding.statusText.text = "Zoeken vanaf $originLabel"
+                binding.mapView.controller.animateTo(origin)
+                binding.mapView.controller.setZoom(12.0)
+                binding.resultText.text = "Camperplaatsen zoeken rond $originLabel…"
+
+                val places = withContext(Dispatchers.IO) {
+                    queryOverpass(origin, radiusKm)
+                }
+                showPlaces(places, origin, radiusKm, originLabel)
             } catch (e: Exception) {
-                binding.resultText.text = "Zoeken mislukt: ${e.message ?: "onbekende fout"}"
-                Toast.makeText(this@MainActivity, "Overpass is tijdelijk niet bereikbaar. Probeer opnieuw.", Toast.LENGTH_LONG).show()
+                val message = e.message ?: "Onbekende fout"
+                binding.resultText.text = message
+                Toast.makeText(this@MainActivity, message, Toast.LENGTH_LONG).show()
             } finally {
                 setLoading(false, null)
             }
+        }
+    }
+
+    private fun geocodePlace(query: String): Pair<GeoPoint, String>? {
+        val url = Uri.Builder()
+            .scheme("https")
+            .authority("nominatim.openstreetmap.org")
+            .appendPath("search")
+            .appendQueryParameter("q", query)
+            .appendQueryParameter("format", "jsonv2")
+            .appendQueryParameter("limit", "1")
+            .build()
+            .toString()
+
+        val request = Request.Builder()
+            .url(url)
+            .header("User-Agent", "CamperFinderPro/1.0 (Android)")
+            .header("Accept-Language", "nl,en;q=0.8")
+            .build()
+
+        client.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) error("Locatiezoekdienst gaf fout ${response.code}")
+            val results = JSONArray(response.body?.string() ?: "[]")
+            if (results.length() == 0) return null
+            val result = results.getJSONObject(0)
+            val lat = result.getString("lat").toDouble()
+            val lon = result.getString("lon").toDouble()
+            val label = result.optString("display_name").ifBlank { query }
+            return GeoPoint(lat, lon) to label
         }
     }
 
@@ -163,7 +244,7 @@ class MainActivity : AppCompatActivity() {
             .build()
 
         client.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) error("Serverfout ${response.code}")
+            if (!response.isSuccessful) error("Camperplaatsendienst gaf fout ${response.code}")
             val json = JSONObject(response.body?.string() ?: error("Leeg antwoord"))
             val elements = json.getJSONArray("elements")
             val results = mutableListOf<CamperPlace>()
@@ -188,7 +269,9 @@ class MainActivity : AppCompatActivity() {
                     id = element.optLong("id", i.toLong()),
                     latitude = lat,
                     longitude = lon,
-                    name = tags.optString("name").ifBlank { tags.optString("operator").ifBlank { "Camperplaats" } },
+                    name = tags.optString("name").ifBlank {
+                        tags.optString("operator").ifBlank { "Camperplaats" }
+                    },
                     distanceKm = distance,
                     fee = tagValue(tags, "fee"),
                     capacity = tagValue(tags, "capacity"),
@@ -217,8 +300,13 @@ class MainActivity : AppCompatActivity() {
         return result[0] / 1000.0
     }
 
-    private fun showPlaces(places: List<CamperPlace>, origin: GeoPoint, radiusKm: Int) {
-        binding.mapView.overlays.removeAll { it is Marker && it != locationOverlay }
+    private fun showPlaces(
+        places: List<CamperPlace>,
+        origin: GeoPoint,
+        radiusKm: Int,
+        originLabel: String
+    ) {
+        binding.mapView.overlays.removeAll { it is Marker }
         places.forEachIndexed { index, place ->
             val marker = Marker(binding.mapView).apply {
                 position = GeoPoint(place.latitude, place.longitude)
@@ -234,14 +322,12 @@ class MainActivity : AppCompatActivity() {
         }
         binding.mapView.invalidate()
         binding.resultText.text = if (places.isEmpty()) {
-            "Geen geregistreerde camperplaatsen gevonden binnen $radiusKm km."
+            "Geen geregistreerde camperplaatsen gevonden binnen $radiusKm km van $originLabel."
         } else {
-            "${places.size} camperplaats(en) gevonden. Dichtstbij: ${places.first().name} (${String.format(Locale.getDefault(), "%.1f", places.first().distanceKm)} km)."
+            "${places.size} camperplaats(en) gevonden rond $originLabel. Dichtstbij: ${places.first().name} (${String.format(Locale.getDefault(), "%.1f", places.first().distanceKm)} km)."
         }
-        if (places.isNotEmpty()) {
-            binding.mapView.controller.animateTo(origin)
-            binding.mapView.controller.setZoom(zoomForRadius(radiusKm))
-        }
+        binding.mapView.controller.animateTo(origin)
+        binding.mapView.controller.setZoom(zoomForRadius(radiusKm))
     }
 
     private fun zoomForRadius(radiusKm: Int): Double = when {
@@ -283,21 +369,41 @@ class MainActivity : AppCompatActivity() {
 
     private fun navigateTo(place: CamperPlace) {
         val uri = Uri.parse("google.navigation:q=${place.latitude},${place.longitude}&mode=d")
-        val mapsIntent = Intent(Intent.ACTION_VIEW, uri).setPackage("com.google.android.apps.maps")
+        val mapsIntent = Intent(Intent.ACTION_VIEW, uri)
+            .setPackage("com.google.android.apps.maps")
         if (mapsIntent.resolveActivity(packageManager) != null) {
             startActivity(mapsIntent)
         } else {
-            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("geo:${place.latitude},${place.longitude}?q=${place.latitude},${place.longitude}(${Uri.encode(place.name)})")))
+            startActivity(
+                Intent(
+                    Intent.ACTION_VIEW,
+                    Uri.parse(
+                        "geo:${place.latitude},${place.longitude}?q=${place.latitude},${place.longitude}(${Uri.encode(place.name)})"
+                    )
+                )
+            )
         }
     }
 
     private fun setLoading(loading: Boolean, text: String?) {
         binding.progressBar.visibility = if (loading) View.VISIBLE else View.GONE
         binding.searchButton.isEnabled = !loading
+        binding.placeInput.isEnabled = !loading
         if (text != null) binding.resultText.text = text
     }
 
-    override fun onResume() { super.onResume(); binding.mapView.onResume() }
-    override fun onPause() { binding.mapView.onPause(); super.onPause() }
-    override fun onDestroy() { locationOverlay.disableMyLocation(); super.onDestroy() }
+    override fun onResume() {
+        super.onResume()
+        binding.mapView.onResume()
+    }
+
+    override fun onPause() {
+        binding.mapView.onPause()
+        super.onPause()
+    }
+
+    override fun onDestroy() {
+        locationOverlay.disableMyLocation()
+        super.onDestroy()
+    }
 }
